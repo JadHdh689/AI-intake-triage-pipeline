@@ -1,0 +1,839 @@
+{
+  "name": "ArcVault AI Intake & Triage Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "ArcVault Customer Request Intake",
+        "formDescription": "Submit your support request, feature idea, or question. Our team will review and respond promptly.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Email Address",
+              "fieldType": "email",
+              "fieldName": "email",
+              "placeholder": "your.email@company.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Message",
+              "fieldType": "textarea",
+              "fieldName": "message",
+              "placeholder": "Please describe your request in detail...",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "60418b72-e104-40b8-8f00-663262afbc66",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        416
+      ],
+      "webhookId": "7a0cb896-4e6d-40d9-8dac-df8428029bbe"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map((item) => {\n  const d = item.json;\n\n  const category = d.category || \"\";\n  const confidence = Number(d.confidence_score ?? 0);\n  const msg = String(d.raw_message || \"\").toLowerCase();\n\n  let identifiers = {};\n  try {\n    identifiers = JSON.parse(d.identifiers || \"{}\");\n  } catch {\n    identifiers = {};\n  }\n\n  const routingMap = {\n    \"Bug Report\": \"Engineering\",\n    \"Incident/Outage\": \"Incident Response\",\n    \"Feature Request\": \"Product\",\n    \"Billing Issue\": \"Billing\",\n    \"Technical Question\": \"IT/Security\",\n  };\n\n  const original_queue = routingMap[category] || \"General Support\";\n\n  let destination_queue = original_queue;\n  let escalation_flag = false;\n  const escalation_reasons = [];\n\n  if (confidence < 0.70) {\n    escalation_flag = true;\n    escalation_reasons.push(`Low confidence: ${(confidence * 100).toFixed(0)}%`);\n  }\n\n  const criticalKeywords = [\n    \"outage\",\n    \"down for all users\",\n    \"multiple users affected\",\n    \"production down\",\n    \"data loss\",\n    \"security breach\",\n    \"unauthorized access\",\n    \"service unavailable\",\n    \"down\"\n  ];\n\n  for (const keyword of criticalKeywords) {\n    if (msg.includes(keyword)) {\n      escalation_flag = true;\n      escalation_reasons.push(`Critical keyword: \"${keyword}\"`);\n      break;\n    }\n  }\n\n  const amounts = Array.isArray(identifiers.amounts_mentioned)\n    ? identifiers.amounts_mentioned\n        .map(a => Number(String(a).replace(/[^0-9.]/g, \"\")))\n        .filter(n => !Number.isNaN(n))\n    : [];\n\n  if (category === \"Billing Issue\" && amounts.length >= 2) {\n    const sorted = [...amounts].sort((a, b) => b - a);\n    const discrepancy = Math.abs(sorted[0] - sorted[1]);\n\n    if (discrepancy > 500) {\n      escalation_flag = true;\n      escalation_reasons.push(`Billing discrepancy over $500: $${discrepancy.toFixed(2)}`);\n    }\n  }\n\n  if (escalation_flag) {\n    destination_queue = \"Escalation - Human Review\";\n  }\n\n  return {\n    json: {\n      ...d,\n      original_queue,\n      destination_queue,\n      escalation_flag,\n      escalation_reasons: escalation_reasons.join(\"; \")\n    }\n  };\n});"
+      },
+      "id": "3de0c0fe-e637-48ba-8f0e-3b6f710da763",
+      "name": "Route & Escalate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1",
+              "leftValue": "={{ $json.escalation_flag }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9586601c-4f53-4567-8db3-6cd0ffbb21cb",
+      "name": "Escalated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1712,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        240,
+        224
+      ],
+      "id": "ab016701-d6f4-4420-aca6-1cc38c0df531",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "BjtJqRMRI3F47EG6",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        688,
+        320
+      ],
+      "id": "137a182f-d327-4f2b-9ecb-5a5763328f5a",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "source",
+              "value": "gmail",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "sender",
+              "value": "={{ $json.From }}",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "raw_message",
+              "value": "={{ $json.snippet}}",
+              "type": "string"
+            },
+            {
+              "id": "5",
+              "name": "received_at",
+              "value": "={{ $now.toFormat(\"yyyy-MM-dd HH:mm\") }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "10ac575d-5736-48b6-9653-45e2a811db62",
+      "name": "Normalize Gmail",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        464,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "source",
+              "value": "=webform",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "sender",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "raw_message",
+              "value": "={{ $json.message }}",
+              "type": "string"
+            },
+            {
+              "id": "5",
+              "name": "received_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5526078b-c001-415e-8fc3-ae330188103c",
+      "name": "Normalize Form",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        464,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=Analyze this normalized ArcVault customer request.\n\nSource: {{$json.source}}\nSender: {{$json.sender}}\nMessage: {{$json.raw_message}}\nReceived at: {{$json.received_at}}\n"
+            },
+            {
+              "role": "system",
+              "content": "You are an AI intake and triage assistant for ArcVault, a B2B SaaS company.\n\nYour job is to analyze one normalized customer support request and return one clean JSON object for downstream automation.\n\nArcVault receives requests from Email, Web Form, and Support Portal. The input is already normalized into source, sender, subject, raw_message, and received_at.\n\nYou must do all of the following:\n1. Classify the request.\n2. Assign priority.\n3. Assign confidence_score.\n4. Extract useful entities.\n5. Identify urgency_signal.\n6. Write a short receiving-team summary.\n7. Suggest an SLA.\n\nAllowed categories:\n- Bug Report: broken functionality, errors, incorrect behavior, unexpected behavior\n- Feature Request: new feature, product improvement, enhancement request\n- Billing Issue: invoice, charge, contract rate, payment, pricing, refund, overcharge\n- Technical Question: setup, configuration, integration, authentication, usage question\n- Incident/Outage: downtime, service unavailable, dashboard not loading, production-blocking issue, multi-user impact\n\nAllowed priorities:\n- High: outage, production-blocking issue, multi-user impact, serious security issue, major billing risk\n- Medium: single-user bug, authentication issue, billing discrepancy, important but not service-wide issue\n- Low: general question, normal feature request, informational request\n\nUrgency rules:\n- critical: outage, multi-user impact, production-blocking issue, data loss, security issue\n- elevated: single-user error, authentication issue, billing discrepancy\n- normal: general question, normal feature request, informational request\n\nSLA rules:\n- critical = 1 hour\n- elevated = 4 hours\n- normal = 24 hours\n\nRestrictions:\n- Return ONLY valid JSON.\n- Do not include markdown.\n- Do not include text outside the JSON.\n- Do not decide routing.\n- Do not decide escalation.\n- Use null when an identifier is missing.\n- Use arrays for dates_mentioned and amounts_mentioned.\n- confidence_score must be a number between 0.0 and 1.0.\n- If source is \"gmail\", treat it as Email.\n\nReturn exactly this JSON structure:\n{\n  \"category\": \"\",\n  \"priority\": \"\",\n  \"confidence_score\": 0,\n  \"classification_reasoning\": \"\",\n  \"core_issue\": \"\",\n  \"identifiers\": {\n    \"account_id\": null,\n    \"invoice_number\": null,\n    \"error_code\": null,\n    \"product_area\": null,\n    \"dates_mentioned\": [],\n    \"amounts_mentioned\": []\n  },\n  \"urgency_signal\": \"\",\n  \"summary\": \"\",\n  \"suggested_sla\": \"\"\n}\n\nExample 1:\nInput message: \"The reports page keeps showing error 504 when our manager tries to open monthly exports.\"\nOutput:\n{\n  \"category\": \"Bug Report\",\n  \"priority\": \"Medium\",\n  \"confidence_score\": 0.92,\n  \"classification_reasoning\": \"The customer reports a specific product feature failing with an error code.\",\n  \"core_issue\": \"The reports page fails with error 504 when opening monthly exports.\",\n  \"identifiers\": {\n    \"account_id\": null,\n    \"invoice_number\": null,\n    \"error_code\": \"504\",\n    \"product_area\": \"Reports / Exports\",\n    \"dates_mentioned\": [],\n    \"amounts_mentioned\": []\n  },\n  \"urgency_signal\": \"elevated\",\n  \"summary\": \"The customer reports that the reports page returns error 504 when opening monthly exports. Engineering should investigate the reports/export workflow and check for timeout issues.\",\n  \"suggested_sla\": \"4 hours\"\n}\n\nExample 2:\nInput message: \"Can ArcVault support automatic user provisioning through Microsoft Entra ID?\"\nOutput:\n{\n  \"category\": \"Technical Question\",\n  \"priority\": \"Low\",\n  \"confidence_score\": 0.91,\n  \"classification_reasoning\": \"The customer is asking about identity provider integration and user provisioning setup.\",\n  \"core_issue\": \"The customer asks whether ArcVault supports automatic user provisioning through Microsoft Entra ID.\",\n  \"identifiers\": {\n    \"account_id\": null,\n    \"invoice_number\": null,\n    \"error_code\": null,\n    \"product_area\": \"SSO / Identity Management\",\n    \"dates_mentioned\": [],\n    \"amounts_mentioned\": []\n  },\n  \"urgency_signal\": \"normal\",\n  \"summary\": \"The customer is asking whether ArcVault supports automatic user provisioning through Microsoft Entra ID. IT/Security should provide integration guidance or documentation.\",\n  \"suggested_sla\": \"24 hours\"\n}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "1aa6df8e-4bce-4687-b534-daf662db5d59",
+      "name": "Analyze message LLM",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        912,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "kIGL9l9bI3YU5xIN",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map((item, index) => {\n  const current = item.json;\n\n  const rawText = current.output?.[0]?.content?.[0]?.text;\n\n  if (!rawText) {\n    throw new Error(\"No AI text output found.\");\n  }\n\n  let ai;\n  try {\n    ai = JSON.parse(rawText);\n  } catch (error) {\n    throw new Error(\"Failed to parse AI JSON: \" + rawText);\n  }\n\n  const original = $(\"Merge\").all()[index]?.json || $(\"Merge\").all()[0]?.json || {};\n\n  const cleanRawMessage = String(original.raw_message || \"\")\n    .replace(/&#39;/g, \"'\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&amp;/g, \"&\");\n\n  const identifiers = ai.identifiers || {};\n\n  return {\n    json: {\n      request_id: `REQ-${$execution.id}-${index}`,\n      source: original.source === \"gmail\" ? \"Email\" : original.source || \"\",\n      sender: original.sender || \"\",\n      raw_message: cleanRawMessage,\n      received_at: original.received_at || \"\",\n\n      category: ai.category || \"\",\n      priority: ai.priority || \"\",\n      confidence_score: Number(ai.confidence_score ?? 0),\n      classification_reasoning: ai.classification_reasoning || \"\",\n      core_issue: ai.core_issue || \"\",\n\n      identifiers: JSON.stringify(identifiers),\n\n      urgency_signal: ai.urgency_signal || \"\",\n      summary: ai.summary || \"\",\n      suggested_sla: ai.suggested_sla || \"\"\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        320
+      ],
+      "id": "efa46360-be11-48e1-b410-c0791ed80d6c",
+      "name": "Parse AI output"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1s2iiiFgRejIPvh3UEvICLDtC0IfHL1UHKBH44Bag4as",
+          "mode": "list",
+          "cachedResultName": "ArcVault Records",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1s2iiiFgRejIPvh3UEvICLDtC0IfHL1UHKBH44Bag4as/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Human Review Queue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1s2iiiFgRejIPvh3UEvICLDtC0IfHL1UHKBH44Bag4as/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "request_id",
+              "displayName": "request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sender",
+              "displayName": "sender",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "raw_message",
+              "displayName": "raw_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "classification_reasoning",
+              "displayName": "classification_reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "core_issue",
+              "displayName": "core_issue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "identifiers",
+              "displayName": "identifiers",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "urgency_signal",
+              "displayName": "urgency_signal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "suggested_sla",
+              "displayName": "suggested_sla",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "original_queue",
+              "displayName": "original_queue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "destination_queue",
+              "displayName": "destination_queue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "escalation_flag",
+              "displayName": "escalation_flag",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "escalation_reasons",
+              "displayName": "escalation_reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1920,
+        224
+      ],
+      "id": "3305f94a-118d-4860-9fbe-e7ca4dd53123",
+      "name": "Add to Human Review",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "MFhDNxzkRHTCGuPc",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1s2iiiFgRejIPvh3UEvICLDtC0IfHL1UHKBH44Bag4as",
+          "mode": "list",
+          "cachedResultName": "ArcVault Records",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1s2iiiFgRejIPvh3UEvICLDtC0IfHL1UHKBH44Bag4as/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 827169255,
+          "mode": "list",
+          "cachedResultName": "Normal Queue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1s2iiiFgRejIPvh3UEvICLDtC0IfHL1UHKBH44Bag4as/edit#gid=827169255"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sender",
+              "displayName": "sender",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_message",
+              "displayName": "raw_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "classification_reasoning",
+              "displayName": "classification_reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "core_issue",
+              "displayName": "core_issue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "account_id",
+              "displayName": "account_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_code",
+              "displayName": "error_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product_area",
+              "displayName": "product_area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dates_mentioned",
+              "displayName": "dates_mentioned",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "amounts_mentioned",
+              "displayName": "amounts_mentioned",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "urgency_signal",
+              "displayName": "urgency_signal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "suggested_sla",
+              "displayName": "suggested_sla",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "original_queue",
+              "displayName": "original_queue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "destination_queue",
+              "displayName": "destination_queue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "escalation_flag",
+              "displayName": "escalation_flag",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "escalation_reasons",
+              "displayName": "escalation_reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1920,
+        416
+      ],
+      "id": "d945b5ab-2498-4159-91e2-765c0abb8c64",
+      "name": "Add to Normal Queue",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "MFhDNxzkRHTCGuPc",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Form",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route & Escalate": {
+      "main": [
+        [
+          {
+            "node": "Escalated?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalated?": {
+      "main": [
+        [
+          {
+            "node": "Add to Human Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add to Normal Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Analyze message LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Gmail": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Form": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Analyze message LLM": {
+      "main": [
+        [
+          {
+            "node": "Parse AI output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI output": {
+      "main": [
+        [
+          {
+            "node": "Route & Escalate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b4bce66c-a7c5-4741-a5be-e8d1559a0507",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dfbac5a175e18409a67ce938347b81bb4ec0c45f159eead55f623c70cf1a2d9c"
+  },
+  "id": "tvgpq7RiyYMGAGs1",
+  "tags": []
+}
