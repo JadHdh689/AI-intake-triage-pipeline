@@ -67,8 +67,8 @@ This ensures that risky or uncertain cases are not handled automatically without
 - Google Sheets
 - JSON structured outputs
 
-## Why This Project Matters
+## The Goal of this Project
 
-This project demonstrates practical AI workflow engineering. It combines multi-source ingestion, input normalization, LLM-based classification, structured JSON generation, entity extraction, deterministic routing logic, escalation rules, and persistent output storage.
+It combines multi-source ingestion, input normalization, LLM-based classification, structured JSON generation, entity extraction, deterministic routing logic, escalation rules, and persistent output storage.
 
 Instead of only using an LLM to generate text, the workflow uses AI as one step inside a larger automation system with validation, routing, and human-in-the-loop review.
